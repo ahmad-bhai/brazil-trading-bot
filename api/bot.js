@@ -1,105 +1,112 @@
-const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// Simple In-Memory / Global State Store for Serverless Environment
+// Note: Real production mein database (like Firebase / Vercel KV) use hota hai toggling state ke liye.
+global.activeBots = global.activeBots || {};
 
-// Dynamic active bots aur unke intervals ko store karne ke liye memory object
-const activeBots = {};
+module.exports = async (req, res) => {
+    // Enable CORS (Taake aap kisi bhi browser ya frontend web app se hit kar sako)
+    res.setHeader('Access-Control-Allow-Credentials', true);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+    res.setHeader(
+        'Access-Control-Allow-Headers',
+        'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+    );
 
-// Helper Function: Dummy Signal Generator Engine (Future mein yahan real indicator lagayenge)
-function generateSignal() {
-    const pairs = ['EUR/USD (OTC)', 'GBP/USD (OTC)', 'USD/JPY (OTC)', 'AUD/CAD'];
-    const directions = ['CALL (BUY 🟢)', 'PUT (SELL 🔴)'];
-    
-    const pair = pairs[Math.floor(Math.random() * pairs.length)];
-    const direction = directions[Math.floor(Math.random() * directions.length)];
-    
-    return `
-🔥 *RQA AUTOMATED VIP SIGNAL* 🔥
-━━━━━━━━━━━━━━━━━━━━━
-💱 *Pair:* ${pair}
-🎯 *Action:* ${direction}
-⏰ *Timeframe:* 1 Min
-⚡ *Accuracy:* High Analysis
+    if (req.method === 'OPTIONS') {
+        res.status(200).end();
+        return;
+    }
 
-⚠️ _Always use 2% Risk Management!_
-    `;
-}
+    // Extraction of parameters (Supports both Query Params and Dynamic Routes)
+    // E.g., /api/bot?token=123&status=true OR /api/bot/123/true
+    let token = req.query.token;
+    let status = req.query.status;
 
-// 🚀 Dynamic API Route
-// Pattern: /api/bot/:token/:status
-app.get('/api/bot/:token/:status', (req, res) => {
-    const { token, status } = req.params;
-    const isEnable = status.toLowerCase() === 'true';
+    // Route matching for Vercel dynamic pathing if query params aren't used
+    if (!token && req.url) {
+        const parts = req.url.split('/').filter(Boolean);
+        // Path pattern: api / bot / {token} / {status}
+        if (parts.length >= 3) {
+            token = parts[1];
+            status = parts[2];
+        }
+    }
+
+    if (!token || status === undefined) {
+        return res.status(400).json({
+            success: false,
+            message: "Missing parameters! Usage: /api/bot?token=BOT_TOKEN&status=true"
+        });
+    }
+
+    const isEnable = String(status).toLowerCase() === 'true';
 
     try {
-        // CASE 1: AGAR USER NE STATUS 'true' KIYA HAI (START BOT)
         if (isEnable) {
-            // Agar bot pehle se active hai toh duplicate start mat karo
-            if (activeBots[token] && activeBots[token].isRunning) {
-                return res.json({
-                    success: true,
-                    message: "Bot is ALREADY running and sending signals!",
+            // Check if already active
+            if (global.activeBots[token]) {
+                return res.status(200).json({
+                    status: true,
+                    message: "RQA Bot System is ALREADY active!",
+                    serverUrl: "https://brazil-trading-bot.vercel.app",
                     botToken: token,
-                    status: "active"
+                    state: "RUNNING"
                 });
             }
 
-            // Naya Bot Instance create karo
+            // Create Webhook or Polling instance for Telegram
             const bot = new TelegramBot(token, { polling: true });
 
-            // Automated Signal Loop (Har 1 minute / 60000ms baad signal bhejega)
-            // Note: Pehle kisi target channel/chat ki ID set karni hoti hai. Demo ke liye polling response use hoga.
-            const signalInterval = setInterval(() => {
-                console.log(`[${new Date().toLocaleTimeString()}] Sending Automated Signal for token: ...${token.slice(-5)}`);
-                
-                // Yahan aap apni Telegram Channel ID (e.g., "@rqaofficial") daal sakte ho:
-                // bot.sendMessage('@your_channel_username', generateSignal(), { parse_mode: 'Markdown' });
-            }, 60000); // 60 seconds interval
-
-            // Bot handling command '/start'
+            // Automated Welcome Hook
             bot.onText(/\/start/, (msg) => {
-                bot.sendMessage(msg.chat.id, "🤖 *RQA Automated Signal Bot Active!*\n\nAapko automated signals milna shuru ho jayenge.", { parse_mode: "Markdown" });
+                bot.sendMessage(msg.chat.id, 
+                    "🔥 *Royal Quotex Academy Engine Active!* 🔥\n\nSystem status: ONLINE 🟢\nSignals are linked with Vercel API.", 
+                    { parse_mode: "Markdown" }
+                );
             });
 
-            // Memory mein status save kar lo
-            activeBots[token] = {
-                instance: bot,
-                interval: signalInterval,
-                isRunning: true
+            // Save instance in global memory
+            global.activeBots[token] = {
+                botInstance: bot,
+                status: true,
+                startTime: new Date().toISOString()
             };
 
-            console.log(`✅ Bot Started for Token: ${token}`);
-            return res.json({
+            return res.status(200).json({
                 status: true,
-                message: "RQA Bot System INSTALLED & STARTED successfully! 🚀",
+                message: "RQA Bot System INSTALLED & ACTIVATED successfully! 🚀",
+                serverUrl: "https://brazil-trading-bot.vercel.app",
                 botToken: token,
                 state: "RUNNING"
             });
-        } 
-        
-        // CASE 2: AGAR USER NE STATUS 'false' KIYA HAI (STOP BOT)
-        else {
-            if (!activeBots[token] || !activeBots[token].isRunning) {
-                return res.json({
-                    success: false,
-                    message: "Bot is NOT running or already stopped.",
-                    botToken: token
+
+        } else {
+            // STOP BOT CONDITION
+            if (!global.activeBots[token]) {
+                return res.status(200).json({
+                    status: false,
+                    message: "Bot is already STOPPED or not found.",
+                    serverUrl: "https://brazil-trading-bot.vercel.app",
+                    botToken: token,
+                    state: "STOPPED"
                 });
             }
 
-            // Signal Interval ko clear karo aur Telegram Polling stop karo
-            clearInterval(activeBots[token].interval);
-            activeBots[token].instance.stopPolling();
-            
-            // Memory clean karo
-            delete activeBots[token];
+            // Stop Telegram Polling and Clear memory
+            try {
+                await global.activeBots[token].botInstance.stopPolling();
+            } catch (err) {
+                console.log("Polling stop log:", err.message);
+            }
 
-            console.log(`🛑 Bot Stopped for Token: ${token}`);
-            return res.json({
+            delete global.activeBots[token];
+
+            return res.status(200).json({
                 status: false,
                 message: "RQA Bot System STOPPED successfully! 🛑",
+                serverUrl: "https://brazil-trading-bot.vercel.app",
                 botToken: token,
                 state: "STOPPED"
             });
@@ -111,11 +118,4 @@ app.get('/api/bot/:token/:status', (req, res) => {
             error: error.message
         });
     }
-});
-
-// Server Listen
-app.listen(PORT, () => {
-    console.log(`🔥 RQA Node.js API Server running on port ${PORT}`);
-    console.log(`Test URL: http://localhost:${PORT}/api/bot/YOUR_TOKEN/true`);
-});
-              
+};
